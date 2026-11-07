@@ -31,7 +31,9 @@ APK_SRCS    := $(wildcard app/src/main/java/build/bytes/temproot/*.java \
                                app/src/main/jni/*.c app/src/main/jni/*.h \
                                app/src/main/jni/*.S app/src/main/jni/*.inc \
                                app/src/main/res/layout/*.xml \
-                               app/src/main/res/values/*.xml) \
+                               app/src/main/res/values/*.xml \
+                               profile-core/src/main/kotlin/com/ghostlock/app/data/*.kt \
+                               profile-core/src/main/kotlin/com/ghostlock/app/data/*/*.kt) \
                    app/src/main/AndroidManifest.xml \
                    app/build.gradle.kts \
                    app/src/main/jni/CMakeLists.txt

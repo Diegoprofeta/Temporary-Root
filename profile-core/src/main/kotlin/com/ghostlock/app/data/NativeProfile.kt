@@ -237,55 +237,6 @@ data class NativeProfileDocument(
 
         fun routeKind(route: String?): UInt = RouteKind.fromToken(route)?.wire ?: 0u
 
-        /**
-         * Rewrites the `meta.safe_mode` entry of a v2 document to 1, returning a
-         * copy, or null when the blob is not a well-formed v2 document. v2 has
-         * no fixed slot offset, so the section/entry is located by scanning.
-         */
-        fun patchSafeMode(document: ByteArray): ByteArray? {
-            if (document.size < HeaderSize) return null
-            val buffer = ByteBuffer.wrap(document).order(ByteOrder.LITTLE_ENDIAN)
-            if (buffer.int.toUInt() != Magic) return null
-            if (buffer.short.toUShort() != Version) return null
-            buffer.short // frontend
-            buffer.short // backend
-            buffer.short // middleware
-            val releaseLength = buffer.short.toInt() and 0xffff
-            buffer.short // reserved
-            if (buffer.remaining() < releaseLength + 2) return null
-            buffer.position(buffer.position() + releaseLength)
-            val sectionCount = buffer.short.toInt() and 0xffff
-            repeat(sectionCount) {
-                if (buffer.remaining() < 1) return null
-                val nameLength = buffer.get().toInt() and 0xff
-                if (buffer.remaining() < nameLength + 4) return null
-                val nameBytes = ByteArray(nameLength)
-                buffer.get(nameBytes)
-                val entryCount = buffer.int.toUInt().toLong()
-                var entry = 0L
-                while (entry < entryCount) {
-                    if (buffer.remaining() < 1) return null
-                    val keyLength = buffer.get().toInt() and 0xff
-                    if (buffer.remaining() < keyLength + 8) return null
-                    val keyBytes = ByteArray(keyLength)
-                    buffer.get(keyBytes)
-                    val valueOffset = buffer.position()
-                    buffer.long // value
-                    if (String(nameBytes, Charsets.UTF_8) == "meta" &&
-                        String(keyBytes, Charsets.UTF_8) == "safe_mode"
-                    ) {
-                        val copy = document.copyOf()
-                        ByteBuffer.wrap(copy)
-                            .order(ByteOrder.LITTLE_ENDIAN)
-                            .putLong(valueOffset, 1L)
-                        return copy
-                    }
-                    entry++
-                }
-            }
-            return null
-        }
-
         fun fromBinary(bytes: ByteArray): NativeProfileDocument? {
             if (bytes.size < HeaderSize) return null
             val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)

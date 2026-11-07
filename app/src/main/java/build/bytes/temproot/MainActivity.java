@@ -4,7 +4,6 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -258,13 +257,24 @@ public class MainActivity extends Activity implements IReporter {
         updateButtons();
 
         // A previous run that never reached its end marker died mid-exploit; pull
-        // the pstore trace while this process still has root.
-        new Thread(() -> RunLog.capturePanicIfNeeded(this), "temporaryroot-panic").start();
+        // the pstore trace while this process still has root, then put the dead
+        // run's log back into the console so a reboot does not look like a reset.
+        new Thread(() -> {
+            RunLog.capturePanicIfNeeded(this);
+            restoreCrashedRun();
+        }, "temporaryroot-panic").start();
     }
 
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
+    /** Prints the last unfinished run's log back into the console after a crash or reboot. */
+    private void restoreCrashedRun() {
+        String text = RunLog.unfinishedRun(this);
+        if (text == null) return;
+        if (text.length() > 6000) text = "\n… " + text.substring(text.length() - 6000);
+        final String restored = text;
+        mMain.post(() -> {
+            outputView.append("=== restored: previous run never finished (crash, panic or reboot) ===\n" + restored);
+            setLogExpanded(true);
+        });
     }
 
     @Override
@@ -291,23 +301,33 @@ public class MainActivity extends Activity implements IReporter {
 
     /** Samsung kernels only accept the diabl0w fork's ksud. */
     private boolean isSamsungDevice() {
-        return Build.MANUFACTURER.equalsIgnoreCase("samsung")
-                || Build.BRAND.equalsIgnoreCase("samsung");
+        return ExploitRunner.samsungDevice();
     }
 
     private List<ManagerEntry> createKnownManagers() {
         List<ManagerEntry> list = new ArrayList<>();
 
-        // Other managers are hidden on Samsung instead of offering a run that
-        // cannot work there.
+        // Original restriction: Samsung kernels only accepted the diabl0w fork's
+        // late-load (its Galaxy DEFEX)/context handling. The GhostSam dfr_lkm
+        // chain materializes ksud at /dev/.ksud, opens a DEFEX window around the
+        // exec, and falls back to plain argv on unsupported flags, so compatible
+        // KernelSU forks work there too.
         if (isSamsungDevice()) {
             list.add(new ManagerEntry(
                     "Samsung KernelSU",
-                    "diabl0w fork · required for Samsung kernels",
+                    "diabl0w fork · Samsung-tested KernelSU classic",
                     "diabl0w/KernelSU",
                     "https://github.com/diabl0w/KernelSU/releases",
                     "me.weishu.kernelsu",
                     Collections.singletonList("me.weishu.kernelsu")
+            ));
+            list.add(new ManagerEntry(
+                    "KernelSU-Next",
+                    "KernelSU Next · SUSFS manager (works with the GhostSam chain)",
+                    "KernelSU-Next/KernelSU-Next",
+                    "https://github.com/KernelSU-Next/KernelSU-Next/releases/latest",
+                    "com.rifs.kernelsu",
+                    Arrays.asList("com.rifs.kernelsu", "com.kernelsu.next")
             ));
             return list;
         }
@@ -371,13 +391,20 @@ public class MainActivity extends Activity implements IReporter {
     }
 
     private void loadManagers() {
-        managers.clear();
-        PackageManager pm = getPackageManager();
+        // getInstalledApplications()/getApplicationIcon() are binder calls; on a
+        // device with a few hundred apps they visibly stall the first frame.
+        mExec.execute(() -> {
+            List<ManagerEntry> found = discoverManagers();
+            mMain.post(() -> applyManagers(found));
+        });
+    }
 
-        List<ManagerEntry> knownList = createKnownManagers();
+    private List<ManagerEntry> discoverManagers() {
+        PackageManager pm = getPackageManager();
+        List<ManagerEntry> found = createKnownManagers();
         Set<String> claimedPackages = new HashSet<>();
 
-        for (ManagerEntry entry : knownList) {
+        for (ManagerEntry entry : found) {
             entry.isInstalled = false;
             entry.hasKsud = false;
             for (String pkg : entry.candidatePackages) {
@@ -392,7 +419,6 @@ public class MainActivity extends Activity implements IReporter {
                 } catch (PackageManager.NameNotFoundException ignored) {
                 }
             }
-            managers.add(entry);
         }
 
         // Adopting another KSU build on Samsung would offer a broken handoff,
@@ -408,7 +434,7 @@ public class MainActivity extends Activity implements IReporter {
                 // Spoofed builds ship a random package id, so package matching misses
                 // them; adopt them into the known entry so the repo stays downloadable.
                 ManagerEntry known = null;
-                for (ManagerEntry entry : managers) {
+                for (ManagerEntry entry : found) {
                     if (!entry.isInstalled && label.toLowerCase().contains(entry.title.toLowerCase())) {
                         known = entry;
                         break;
@@ -434,13 +460,14 @@ public class MainActivity extends Activity implements IReporter {
                 customEntry.hasKsud = true;
                 customEntry.installedPackageName = app.packageName;
                 customEntry.appIcon = iconFor(pm, app);
-                managers.add(customEntry);
+                found.add(customEntry);
                 claimedPackages.add(app.packageName);
             }
         }
 
-        // Sort managers so INSTALLED ones appear at the TOP!
-        managers.sort((a, b) -> {
+        // Installed managers first; the sort is stable, so the declared order
+        // stays the default among equals.
+        found.sort((a, b) -> {
             boolean aInst = a.isInstalled && a.hasKsud;
             boolean bInst = b.isInstalled && b.hasKsud;
             if (aInst != bInst) {
@@ -448,7 +475,12 @@ public class MainActivity extends Activity implements IReporter {
             }
             return 0;
         });
+        return found;
+    }
 
+    private void applyManagers(List<ManagerEntry> found) {
+        managers.clear();
+        managers.addAll(found);
         ManagerAdapter adapter = new ManagerAdapter(this, managers);
         spinnerSuManager.setAdapter(adapter);
 
@@ -587,8 +619,13 @@ public class MainActivity extends Activity implements IReporter {
         wake.acquire(15 * 60 * 1000L);
         mMain.post(() -> getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
         RunLog.start(mDeCtx);
+        SharedPreferences prefs = mDeCtx.getSharedPreferences(ExploitRunner.PREFS_NAME, MODE_PRIVATE);
         report("estimate: " + (lastScoreStrategy == strategy && lastScore >= 0
                 ? lastScore + "%" : "not measured") + "\n");
+        // Distinguishes the designed restart from a panic: with this on, a
+        // reboot right after "ksud start: SUCCESS" is normal.
+        report("* auto soft reboot after success: "
+                + (prefs.getBoolean(ExploitRunner.PREF_SOFT_REBOOT, false) ? "on" : "off") + "\n");
         try {
             int rc = strategy.launch(mDeCtx, this);
             if (rc == 0) {
@@ -602,7 +639,7 @@ public class MainActivity extends Activity implements IReporter {
             // manager first only races with it.
             if (rc == 0
                     && !mDeCtx.getSharedPreferences(ExploitRunner.PREFS_NAME, MODE_PRIVATE)
-                            .getBoolean(ExploitRunner.PREF_SOFT_REBOOT, true)
+                            .getBoolean(ExploitRunner.PREF_SOFT_REBOOT, false)
                     && mDeCtx.getSharedPreferences(ExploitRunner.PREFS_NAME, MODE_PRIVATE)
                             .getBoolean(ExploitRunner.PREF_OPEN_MANAGER, true)) {
                 mMain.postDelayed(this::openManager, 5000);
@@ -633,7 +670,7 @@ public class MainActivity extends Activity implements IReporter {
                 })
                 .setNeutralButton("Save", (dialog, which) -> {
                     RunLog.export(this);
-                    Toast.makeText(this, "Saved to Download/TemporaryRoot/last-run.log", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "Saved to Download/TemporaryRoot/TemporaryRoot-log.txt", Toast.LENGTH_LONG).show();
                 })
                 .setNegativeButton("Close", null)
                 .show();

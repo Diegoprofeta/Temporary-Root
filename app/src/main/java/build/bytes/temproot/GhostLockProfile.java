@@ -2,6 +2,7 @@ package build.bytes.temproot;
 
 import android.content.Context;
 
+import com.ghostlock.app.data.HoconSupport;
 import com.ghostlock.app.data.profile.ProfileCompiler;
 
 import java.io.BufferedReader;
@@ -9,10 +10,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -39,6 +41,25 @@ final class GhostLockProfile {
     }
 
     static File compile(Context ctx, String release, IReporter reporter) throws Exception {
+        try {
+            return doCompile(ctx, release, reporter);
+        } catch (IllegalStateException e) {
+            // A parse failure usually means a cache file was truncated by a run
+            // that was killed mid-download: drop confs that do not parse and
+            // rebuild once. A valid imported conf is untouched.
+            reporter.report("compiling failed (" + e.getMessage() + "), reloading cache\n");
+            File dir = new File(ctx.getFilesDir(), "ghostlock");
+            File[] confs = dir.listFiles((d, n) -> n.endsWith(".conf"));
+            if (confs != null) {
+                for (File conf : confs) {
+                    if (!parses(conf)) conf.delete();
+                }
+            }
+            return doCompile(ctx, release, reporter);
+        }
+    }
+
+    private static File doCompile(Context ctx, String release, IReporter reporter) throws Exception {
         File dir = new File(ctx.getFilesDir(), "ghostlock");
         if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("cannot create " + dir);
 
@@ -82,6 +103,16 @@ final class GhostLockProfile {
         return names;
     }
 
+    /** true when the file is valid HOCON; missing/empty/truncated files are not. */
+    private static boolean parses(File file) {
+        try {
+            String text = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            return HoconSupport.INSTANCE.parseValue(text) != null;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static boolean download(File dir, String name) throws IOException {
         File target = new File(dir, name);
         if (target.isFile() && target.length() > 0) return true;
@@ -102,11 +133,14 @@ final class GhostLockProfile {
             if (!target.getParentFile().isDirectory() && !target.getParentFile().mkdirs()) {
                 throw new IOException("cannot create " + target.getParentFile());
             }
+            File tmp = new File(target.getParentFile(), target.getName() + ".tmp");
             try (InputStream in = conn.getInputStream();
-                 FileOutputStream out = new FileOutputStream(target)) {
+                 FileOutputStream out = new FileOutputStream(tmp)) {
                 byte[] buffer = new byte[8192];
                 for (int read; (read = in.read(buffer)) > 0; ) out.write(buffer, 0, read);
             }
+            // Atomic swap so a killed run can never leave a truncated conf cached.
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
             return true;
         } finally {
             if (conn != null) conn.disconnect();

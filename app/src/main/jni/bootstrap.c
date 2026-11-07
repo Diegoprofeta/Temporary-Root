@@ -25,17 +25,6 @@ static int pref_true(const char *buf, const char *key)
     return v && tag_end && v < tag_end;
 }
 
-static int pref_false(const char *buf, const char *key)
-{
-    char needle[64];
-    snprintf(needle, sizeof(needle), "name=\"%s\"", key);
-    char *p = strstr(buf, needle);
-    if (!p) return 0;
-    char *tag_end = strchr(p, '>');
-    char *v = strstr(p, "value=\"false\"");
-    return v && tag_end && v < tag_end;
-}
-
 /* Settings only exist once the screen has been opened, so a missing key has
  * to fall back to the same default the switch shows. */
 static void read_toggles(int *soft_reboot, int *disable_modules)
@@ -226,7 +215,7 @@ static int disable_modules(void)
 /* Root stages for the GhostLock handoff: the same protections DirtyFrag gets,
  * then the real ksud runs, then an optional soft reboot. Split in two so the
  * reboot timer starts after late-load instead of racing it. */
-static int protect(const char *ksud)
+static int protect(void)
 {
     int soft_reboot, disable_mods;
     read_toggles(&soft_reboot, &disable_mods);
@@ -256,7 +245,7 @@ static int reboot_later(const char *ksud)
 int main(int argc, char **argv)
 {
     if (argc >= 3 && !strcmp(argv[1], "--protect"))
-        return protect(argv[2]);
+        return protect();
     if (argc >= 3 && !strcmp(argv[1], "--reboot"))
         return reboot_later(argv[2]);
 

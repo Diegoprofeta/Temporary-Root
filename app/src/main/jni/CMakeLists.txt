@@ -31,6 +31,15 @@ set(KO_FILES
     "${JNI_DIR}/ko/temproot-android15-6.6.ko"
     "${JNI_DIR}/ko/temproot-android16-6.12.ko"
     "${JNI_DIR}/ko/temproot-android17-6.18.ko"
+    # dfr_lkm: GhostSam's Samsung-proven modules (see ko/dfr_lkm-NOTICE.md)
+    "${JNI_DIR}/ko/dfr_lkm-android12-5.10.ko"
+    "${JNI_DIR}/ko/dfr_lkm-android13-5.10.ko"
+    "${JNI_DIR}/ko/dfr_lkm-android13-5.15.ko"
+    "${JNI_DIR}/ko/dfr_lkm-android14-5.15.ko"
+    "${JNI_DIR}/ko/dfr_lkm-android14-6.1.ko"
+    "${JNI_DIR}/ko/dfr_lkm-android15-6.6.ko"
+    "${JNI_DIR}/ko/dfr_lkm-android16-6.12.ko"
+    "${JNI_DIR}/ko/dfr_lkm-android17-6.18.ko"
 )
 
 # AGP only packages lib*.so, so the executable is named libtemproot.so and lands

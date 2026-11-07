@@ -133,23 +133,5 @@ object ProfileResolver {
         return errors
     }
 
-    /** Flattens the `execution` object into path -> value. */
-    fun executionFromMerged(profile: Map<String, Any?>): Map<String, ULong> {
-        val execution = profile["execution"] as? Map<*, *> ?: return emptyMap()
-        val out = LinkedHashMap<String, ULong>()
-        fun walk(prefix: String, node: Map<*, *>) {
-            for ((rawKey, value) in node) {
-                val key = rawKey.toString()
-                val path = if (prefix.isEmpty()) key else "$prefix.$key"
-                when (value) {
-                    is Map<*, *> -> walk(path, value)
-                    is Number -> out[path] = value.toLong().toULong()
-                }
-            }
-        }
-        walk("", execution)
-        return out
-    }
-
     private val RouteNames = RouteKind.entries.map { it.token }
 }

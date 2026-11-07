@@ -60,33 +60,31 @@ public final class DirtyFragStrategy implements VulnerabilityStrategy {
         String branch = kMajor + "." + kMinor;
 
         String module = moduleFor(androidRelease, kMajor, kMinor);
-        if (module == null) {
-            if (kMajor < 5) {
-                return new CompatibilityResult("Unsupported: non-GKI kernel " + branch,
-                        "Kernel " + branch + " is a vendor kernel with no Kernel Module Interface. "
-                                + "A module built for one device cannot load on another, so none is shipped for it.",
-                        false);
-            }
-            return new CompatibilityResult("Unsupported kernel " + branch,
-                    "No module is built for Android " + androidRelease + " on kernel " + branch
-                            + ". Supported branches: 5.10, 5.15, 6.1, 6.6, 6.12, 6.18.", false);
-        }
+        String lkm = lkmMode(module);
 
-        if ("y".equals(kernelConfig("CONFIG_MODULE_SIG_FORCE"))) {
-            return new CompatibilityResult("Unsupported: module signing enforced",
-                    "This kernel sets CONFIG_MODULE_SIG_FORCE=y, so it rejects unsigned modules. "
-                            + "The bundled module cannot load here regardless of the kernel branch.", false);
-        }
-
+        // The probe decides exploitability on its own: a kernel without a
+        // loadable module is still tested, and told apart from "patched".
         int rc = ExploitRunner.probe(context, reporter);
         if (rc == 0) {
-            if (!managerOk) {
-                return new CompatibilityResult("Vulnerable — no manager",
-                        "Live probe wrote into the page cache. Install a root manager containing "
-                                + "libksud.so to hand root over.", false);
+            if (!"none".equals(lkm)) {
+                if (!managerOk) {
+                    return new CompatibilityResult("Vulnerable — no manager",
+                            "Live probe wrote into the page cache. Install a root manager containing "
+                                    + "libksud.so to hand root over.", false);
+                }
+                return new CompatibilityResult("Vulnerable",
+                        "Live probe wrote into the page cache. Matching module: "
+                                + (ExploitRunner.samsungDevice()
+                                        ? module.replace("temproot-", "dfr_lkm-") : module) + ".", true);
             }
-            return new CompatibilityResult("Vulnerable",
-                    "Live probe wrote into the page cache. Matching module: " + module + ".", true);
+            String why = module == null
+                    ? (kMajor < 5 ? "this is a non-GKI " + branch + " vendor kernel, so no module is built for it"
+                                  : "no module exists for " + branch)
+                    : "CONFIG_MODULE_SIG_FORCE rejects unsigned modules";
+            return new CompatibilityResult("Vulnerable — no root handoff",
+                    "Live probe wrote into the page cache, but " + why
+                            + ". Without a loadable module the exploit cannot hand root to a manager.",
+                    false);
         }
         if (rc == 1) {
             return new CompatibilityResult("Not vulnerable (patched)",
@@ -124,6 +122,22 @@ public final class DirtyFragStrategy implements VulnerabilityStrategy {
             if (fallback == null) fallback = name;
         }
         return fallback;
+    }
+
+    /** "temproot" | "dfr" | "none": the module family this run can actually load. */
+    static String lkmMode() {
+        int kMajor = 0, kMinor = 0;
+        Matcher matcher = KERNEL_VERSION.matcher(String.valueOf(System.getProperty("os.version", "")));
+        if (matcher.find()) {
+            kMajor = Integer.parseInt(matcher.group(1));
+            kMinor = Integer.parseInt(matcher.group(2));
+        }
+        return lkmMode(moduleFor(androidRelease(), kMajor, kMinor));
+    }
+
+    private static String lkmMode(String module) {
+        if (module == null || "y".equals(kernelConfig("CONFIG_MODULE_SIG_FORCE"))) return "none";
+        return ExploitRunner.samsungDevice() ? "dfr" : "temproot";
     }
 
     /** Reads a single kernel config value; null when /proc/config.gz is unavailable or blocked. */

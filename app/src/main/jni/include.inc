@@ -181,77 +181,8 @@
   .equ MS_REC,            16384
   .equ MS_PRIVATE,       262144
 
-  // load a 64-bit immediate using MOV
-  .macro movq Xn, imm
-      movz    \Xn,  \imm & 0xFFFF
-      movk    \Xn, (\imm >> 16) & 0xFFFF, lsl 16
-      movk    \Xn, (\imm >> 32) & 0xFFFF, lsl 32
-      movk    \Xn, (\imm >> 48) & 0xFFFF, lsl 48
-  .endm
-
   // load a 32-bit immediate using MOV
   .macro movl Wn, imm
       movz    \Wn,  \imm & 0xFFFF
       movk    \Wn, (\imm >> 16) & 0xFFFF, lsl 16
   .endm
-
-  // simulate a push operation
-  .macro push Rn:req
-      str     \Rn, [sp, -16]
-  .endm
-
-  // simulate a pop operation
-  .macro pop R:req
-      ldr     \Rn, [sp], 16
-  .endm
-
-// Save x0 to filename for debugging.
-.macro debug filename
-    stp x0, x1, [sp, #-16]!
-    stp x2, x3, [sp, #-16]!
-    stp x4, x5, [sp, #-16]!
-    stp x6, x7, [sp, #-16]!
-    stp x8, x9, [sp, #-16]!
-    stp x26, x27, [sp, #-16]!
-    stp x28, x29, [sp, #-16]!
-    str x30, [sp, #-16]!
-
-    mov x26, x0
-
-    mov x0, -100
-    adr x1, \filename
-    movl x2, (O_CREAT|O_EXCL|O_CLOEXEC|O_WRONLY)
-    mov x3, (0777)
-    mov x8, #SYS_openat
-    svc 0
-
-    mov x27, x0
-
-    str x26, [sp, #-32]
-    sub x1, sp, 32
-    movl x2, 8
-    mov x8, #SYS_write
-    svc 0
-
-    mov x0, x27
-    mov x8, #SYS_close
-    svc 0
-
-    ldr x30, [sp], #16
-    ldp x28, x29, [sp], #16
-    ldp x26, x27, [sp], #16
-    ldp x8, x9, [sp], #16
-    ldp x6, x7, [sp], #16
-    ldp x4, x5, [sp], #16
-    ldp x2, x3, [sp], #16
-    ldp x0, x1, [sp], #16
-.endm
-
-.macro create_mark filename
-    mov x0, -100
-    adr x1, \filename
-    movl x2, (O_CREAT|O_EXCL|O_CLOEXEC)
-    mov x3, xzr
-    mov x8, #SYS_openat
-    svc 0
-.endm

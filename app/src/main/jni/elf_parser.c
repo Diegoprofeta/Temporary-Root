@@ -14,6 +14,9 @@ static int find_code_cave(int fd, uint64_t exec_off, uint64_t exec_filesz,
     long pagesize = sysconf(_SC_PAGESIZE);
     uint64_t page_off = tail_off & ((uint64_t)pagesize - 1);
     uint64_t slack = page_off ? (uint64_t)pagesize - page_off : 0;
+    printf("cave: exec seg off=0x%llx filesz=0x%llx, tail slack=%llu, need %zu\n",
+           (unsigned long long)exec_off, (unsigned long long)exec_filesz,
+           (unsigned long long)slack, shellcode_size);
     if (shellcode_size <= slack) {
         *out_off = tail_off;
         return 0;
@@ -50,25 +53,25 @@ static int find_code_cave(int fd, uint64_t exec_off, uint64_t exec_filesz,
     return 1;
 }
 
-int find_hook_target(const char *libcxx, const char *symname,
+int find_hook_target(const char *lib, const char *symname,
                      uint64_t *hook_target, uint64_t *payload_target,
                      uint32_t *first_instruction, size_t shellcode_size) {
     *hook_target = 0;
     *payload_target = 0;
 
-    int fd = open(libcxx, O_RDONLY);
+    int fd = open(lib, O_RDONLY);
     if (fd < 0) {
-        printf("open %s failed: %s\n", libcxx, strerror(errno));
+        printf("open %s failed: %s\n", lib, strerror(errno));
         return 1;
     }
 
     Elf64_Ehdr hdr;
     if (read(fd, (char *)&hdr, sizeof(hdr)) < (ssize_t)sizeof(hdr)) {
-        printf("read ELF header from %s failed: %s\n", libcxx, strerror(errno));
+        printf("read ELF header from %s failed: %s\n", lib, strerror(errno));
         close(fd); return 1;
     }
     if (strncmp((char *)hdr.e_ident, "\x7f""ELF", 4) != 0) {
-        printf("invalid ELF: %s\n", libcxx);
+        printf("invalid ELF: %s\n", lib);
         close(fd); return 1;
     }
     if (lseek64(fd, hdr.e_phoff, SEEK_SET) < 0) {
@@ -98,7 +101,7 @@ int find_hook_target(const char *libcxx, const char *symname,
     }
 
     if (executable_off == 0 && executable_vaddr == 0) {
-        printf("no executable PT_LOAD segment found in %s\n", libcxx);
+        printf("no executable PT_LOAD segment found in %s\n", lib);
         close(fd); return 1;
     }
 
@@ -138,7 +141,7 @@ int find_hook_target(const char *libcxx, const char *symname,
     }
 
     if (dynstr == 0 || dynsym_offset == 0) {
-        printf(".dynstr or .dynsym not found in %s\n", libcxx);
+        printf(".dynstr or .dynsym not found in %s\n", lib);
         close(fd); return 1;
     }
 
@@ -169,7 +172,7 @@ int find_hook_target(const char *libcxx, const char *symname,
     }
 
     if (*hook_target == 0) {
-        printf("symbol %s not found in %s\n", symname, libcxx);
+        printf("symbol %s not found in %s\n", symname, lib);
         close(fd); return 1;
     }
 

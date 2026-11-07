@@ -20,8 +20,8 @@ android {
         applicationId = "build.bytes.temproot"
         minSdk = 32
         targetSdk = 37
-        versionCode = 6
-        versionName = "2.1"
+        versionCode = 15
+        versionName = "2.6"
 
         ndk {
             abiFilters += listOf("arm64-v8a")

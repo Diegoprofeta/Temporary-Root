@@ -38,6 +38,7 @@ final class RunLog {
     };
 
     private static File cached;
+    private static long lastExportSize;
 
     private RunLog() {
     }
@@ -50,16 +51,51 @@ final class RunLog {
         return cached;
     }
 
+    /**
+     * Appends a run marker. The file is never wiped by a new run: a previous
+     * run without its end marker means a crash or panic, and wiping it here
+     * used to destroy the only evidence. History is trimmed from the front
+     * instead so the file cannot grow forever.
+     */
     static synchronized void start(Context ctx) {
-        write(ctx, START_MARK + " " + stamp() + " ===\n");
+        String prev = read(ctx);
+        if (!prev.isEmpty() && !prev.startsWith("No saved log")) {
+            if (prev.length() > 256 * 1024) {
+                prev = "\n… older log trimmed\n" + prev.substring(prev.length() - 128 * 1024);
+                write(ctx, prev);
+            }
+            if (unfinishedRun(ctx) != null) {
+                append(ctx, "(previous run ended without a run-end marker - crash, panic or reboot)\n");
+            }
+        }
+        append(ctx, START_MARK + " " + stamp() + " ===\n");
     }
 
     static synchronized void append(Context ctx, String text) {
         try (FileOutputStream out = new FileOutputStream(file(ctx), true)) {
             out.write(text.getBytes(StandardCharsets.UTF_8));
             out.flush();
+            // Without fsync the log lives in the page cache; a kernel panic
+            // (which is exactly when we need it) wipes unflushed writes.
+            out.getFD().sync();
         } catch (Exception ignored) {
         }
+        // A run can die mid-way (panic/reboot before finish()), so keep the
+        // Download copy fresh enough to pull evidence without adb or root.
+        if (file(ctx).length() - lastExportSize > 8 * 1024) export(ctx);
+    }
+
+    /** True when the text's last run block never reached its end marker. */
+    private static boolean lastRunFinished(String text) {
+        int i = text.lastIndexOf(START_MARK);
+        return i < 0 || text.indexOf(END_MARK, i) >= 0;
+    }
+
+    /** Full log text when the most recent run never ended (crash/panic), else null. */
+    static synchronized String unfinishedRun(Context ctx) {
+        String text = read(ctx);
+        if (text.isEmpty() || text.startsWith("No saved log")) return null;
+        return lastRunFinished(text) ? null : text;
     }
 
     static synchronized void finish(Context ctx) {
@@ -76,13 +112,10 @@ final class RunLog {
         }
     }
 
-    /**
-     * Appends the previous run's kernel panic trace when that run never wrote its
-     * end marker. Needs root; silently does nothing without it.
-     */
+    /** Appends the kernel panic trace when the last run never wrote its end
+     *  marker. Needs root; silently does nothing without it. */
     static void capturePanicIfNeeded(Context ctx) {
-        final String previous = read(ctx);
-        if (!previous.contains(START_MARK) || previous.contains(END_MARK)) return;
+        if (unfinishedRun(ctx) == null) return;
 
         String trace = suCat();
         if (trace == null || trace.trim().isEmpty()) return;
@@ -95,7 +128,8 @@ final class RunLog {
      * Copies the log to Download/TemporaryRoot/last-run.log so it can be pulled
      * without adb or root. Overwrites the previous copy.
      */
-    static void export(Context ctx) {
+    static synchronized void export(Context ctx) {
+        lastExportSize = file(ctx).length();
         String text = read(ctx);
         if (text.isEmpty() || text.startsWith("No saved log")) return;
 
@@ -136,8 +170,10 @@ final class RunLog {
     }
 
     private static void write(Context ctx, String text) {
-        try {
-            Files.write(file(ctx).toPath(), text.getBytes(StandardCharsets.UTF_8));
+        try (FileOutputStream out = new FileOutputStream(file(ctx), false)) {
+            out.write(text.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            out.getFD().sync();
         } catch (Exception ignored) {
         }
     }
