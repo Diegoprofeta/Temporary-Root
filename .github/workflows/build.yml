@@ -94,10 +94,31 @@ jobs:
           name: TemporaryRoot
           path: app/build/outputs/apk/release/*.apk
 
-      # Pushing a v* tag also publishes a GitHub release with the APK attached.
+      # Pushing a v* tag publishes a final GitHub release with the APK attached.
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: app/build/outputs/apk/release/*.apk
+          generate_release_notes: true
+
+      # Every push to master also republishes a rolling "prerelease" build:
+      # the previous prerelease tag and release are deleted so the new one is
+      # always the latest master. v* tag releases above are untouched.
+      - name: Reset rolling prerelease
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git push origin :refs/tags/prerelease 2>/dev/null || true
+          gh release delete prerelease --yes 2>/dev/null || true
+
+      - name: Publish prerelease
+        if: github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: prerelease
+          files: app/build/outputs/apk/release/*.apk
+          prerelease: true
+          make_latest: false
           generate_release_notes: true
